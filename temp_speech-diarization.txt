@@ -1,0 +1,2 @@
+audio=wav/test_1.wav lna=a_1 start-time=1.056 end-time=114.904 speaker=speaker_1
+audio=wav/test_1.wav lna=a_2 start-time=114.904 end-time=116.264 speaker=speaker_2

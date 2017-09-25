@@ -1,0 +1,501 @@
+---
+title: "Identifying Gender Based on Voice in Telephone Recording Using Machine Learning"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+author: "Fitra Kacamarga"
+output: 
+  html_document: 
+    fig_caption: yes
+    number_sections: yes
+    toc: yes
+    theme: journal
+    keep_md: false
+    toc_float: true
+runtime: knit
+---
+
+<hr>
+#Introduction
+The aim is to build a model to predict gender classification (male & female) based on voice. This article originated from <a href="http://www.primaryobjects.com/2016/06/22/identifying-the-gender-of-a-voice-using-machine-learning/">Kory Becker's article (2016)</a>. The dataset includes 3,168 recorded samples of male and female voices. 22 acoustic parameters on acoustic signal are gathered from the voice exported into CSV format. This dataset were collected from the following resources:
+
+ * <a href="http://www.nsi.edu/~ani/download.html">The Harvard-Haskins Database of Regularly-Timed Speech</a>
+ * <a href="http://www-mmsp.ece.mcgill.ca/Documents../Data/index.html">Telecommunications & Signal Processing Laboratory (TSP) Speech Database at McGill University</a>
+ * <a href="http://www.repository.voxforge1.org/downloads/SpeechCorpus/Trunk/Audio/Main/8kHz_16bit/">VoxForge Speech Corpus</a>
+ * <a href="http://festvox.org/cmu_arctic/">Festvox CMU_ARCTIC Speech Database at Carnegie Mellon University</a>
+
+#Feature Extraction
+
+The frequency 0 hz-280 hz with a sound threshold of 15 % are used for acoustic properties extraction. The following acoustic properties of each voice are measured (Becker,2016):
+
+* <b>meanfreq:</b> mean frequency (in kHz)
+* <b>sd:</b> standard deviation of frequency
+* <b>median:</b> median frequency (in kHz)
+* <b>Q25:</b> first quantile (in kHz)
+* <b>Q75:</b> third quantile (in kHz)
+* <b>IQR:</b> interquantile range (in kHz)
+* <b>skew:</b> skewness (see note in specprop description)
+* <b>kurt:</b> kurtosis (see note in specprop description)
+* <b>sp.ent:</b> spectral entropy
+* <b>sfm:</b> spectral flatness
+* <b>mode:</b> mode frequency
+* <b>centroid:</b> frequency centroid (see specprop)
+* <b>peakf:</b> peak frequency (frequency with highest energy)
+* <b>meanfun:</b> average of fundamental frequency measured across acoustic signal
+* <b>minfun:</b> minimum fundamental frequency measured across acoustic signal
+* <b>maxfun:</b> maximum fundamental frequency measured across acoustic signal
+* <b>meandom:</b> average of dominant frequency measured across acoustic signal
+* <b>mindom:</b> minimum of dominant frequency measured across acoustic signal
+* <b>maxdom:</b> maximum of dominant frequency measured across acoustic signal
+* <b>dfrange:</b> range of dominant frequency measured across acoustic signal
+* <b>modindx:</b> modulation index. Calculated as the accumulated absolute difference between adjacent measurements of fundamental frequencies divided by the frequency range
+
+Each sounds are labeled male or female. 
+<hr>
+
+```{r Load Packages, message=FALSE, warning=FALSE, echo=FALSE}
+rm(list=ls())
+library(corrplot)
+library(caret)
+library(mlbench)
+library(ROCR)
+library(gridExtra)
+library(shiny)
+set.seed(123)
+data <- read.csv("https://raw.githubusercontent.com/primaryobjects/voice-gender/master/voice.csv")
+```
+# Exploratory Data Analysis 
+## Top rows of the data
+```{r top data, message=FALSE, warning=FALSE, echo=FALSE}
+head(data, 10)
+```
+##Dimensions of the data (rows, columns)
+```{r dimension data, message= FALSE, warning=FALSE, echo=FALSE}
+dim <- as.data.frame(t(dim(data)))
+colnames(dim) <- c("number of rows", "number of columns")
+dim
+```
+##Names and types of columns
+```{r names and type, message=FALSE, warning=FALSE, echo=FALSE}
+str(data)
+```
+## Summarise data
+```{r summarise, echo=FALSE, message=FALSE, warning=FALSE}
+summary(data)
+```
+##Visualize the dataset
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+shinyApp(
+  ui = fluidPage(
+    inputPanel(selectInput("numeric", label = "", choices = c("meanfreq", "sd", "median", "Q25", "Q75", "IQR", "skew", "kurt", "sp.ent", "sfm", "mode", "centroid", "meanfun", "minfun", "maxfun", "meandom", "mindom", "maxdom", "dfrange", "modindx"))),
+    plotOutput("plot")
+  ),
+  server = function(input, output) {
+  
+  r = "
+  if(length(data[,input$numeric]) >= 5000){
+    sampled_data = data[sample(1:nrow(data), 5000, replace=FALSE),]
+    normtest <- shapiro.test(sampled_data[[input$numeric]])
+  } else{
+    normtest <- shapiro.test(data[[input$numeric]])
+  }
+  
+  p.value <- round(normtest$p.value,4)
+  if (p.value < 0.05) {
+    h0 <- 'rejected.'
+    color <- 'red'
+  } else {
+    h0 <- 'accepted.'
+    color <- 'blue'
+  }
+
+    par(mfrow=c(2,2))
+    hist(data[[input$numeric]], xlab = input$numeric, main = paste('Histogram of', input$numeric))
+    d <- density(data[[input$numeric]])
+    plot(d, main = paste('Density Plot of', input$numeric))
+    qqnorm(data[[input$numeric]], main = paste('QQ Plot of', input$numeric))
+    qqline(data[[input$numeric]])
+    boxplot(data[[input$numeric]], main = paste('Boxplot of', input$numeric))
+    mtext(paste('Normality test of', input$numeric, h0, '( p-value=', p.value, ')'), side = 3, line = -1, outer = TRUE, col=color)
+  "
+    r_code <- reactive({
+	    r
+    })
+    
+    output$plot <- renderPlot({
+      eval(parse(text = r_code()))
+    })
+    
+  },
+  
+  options = list(height = 500)
+  
+)
+```
+
+##Visual gender vs attributes
+
+```{r label vs attributes, echo = FALSE, message=FALSE, warning=FALSE}
+library(vcd)
+
+shinyApp(
+  
+  ui = fluidPage(
+    inputPanel(
+      selectInput("numeric3", label = "Numeric Variable:", choices = c("meanfreq", "sd", "median", "Q25", "Q75", "IQR", "skew", "kurt", "sp.ent", "sfm", "mode", "centroid", "meanfun", "minfun", "maxfun", "meandom", "mindom", "maxdom", "dfrange", "modindx")),
+      selectInput("categoric3", label = "Categorical Variable:", choices =c("label"))
+    ),   
+    plotOutput("plot")
+  ),
+  
+  server = function(input, output) {
+    
+    r = "
+#' ## Visualize interactions between numeric and categorical variables via box plots
+#' X axis is the level of categorical variables. This helps you to understand whether the distribution of the numeric variable is significantly different at different levels #' of the categorical variable. 
+#' We test hypothesis 0 (h0) that the numeric variable has the same mean values across the different levels of the categorical variable. 
+#+ echo=FALSE
+    
+    par(mfrow=c(1,1)) 
+    fit <- aov(data[[input$numeric3]] ~ data[[input$categoric3]])
+    test_results <- drop1(fit,~.,test='F')
+    p_value <- round(test_results[[6]][2],4)
+    if (p_value < 0.05){
+    h0 <- 'Rejected'
+    color <- 'red'
+    } else{
+    h0 <- 'Accepted'
+    color <- 'blue'
+    }
+    f <- as.formula(paste(input$numeric3,'~',input$categoric3))
+    boxplot(f, data= data, xlab = input$categoric3, ylab=input$numeric3)
+    title(main=paste('h0', h0, '( p-value=', p_value, ')'), col.main=color)
+    "
+    
+    r_code <- reactive({
+      r = gsub("input\\$numeric3", paste0("'",input$numeric3,"'"), r)
+      gsub("input\\$categoric3", paste0("'",input$categoric3,"'"), r)
+    })
+    
+    output$plot <- renderPlot({
+      eval(parse(text = r_code()))
+    })
+    
+  },
+  options = list(height = 500)
+
+)
+```
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+lapply(data[c("meanfreq","sd", "median", "Q25", "Q75", "IQR", "skew", "kurt", "sp.ent", "sfm", "mode", "centroid", "meanfun", "minfun", "maxfun", "meandom", "mindom", "maxdom", "dfrange", "modindx")], function(x) t.test(x ~ data$label))
+```
+
+<hr>
+This step we're find interaction between gender with variables. Only modindx considered not statistical significance with alpha 0.05.
+<hr>
+##Correlation between variables
+```{r correlation, echo = FALSE, message=FALSE, warning=FALSE}
+c <- cor(data[,-21], method = "pearson")
+corrplot(c)
+correlated <- findCorrelation(c)
+names(data[,correlated])
+```
+<hr>
+meanfreq, centroid, maxdom and kurt are considered highly correlated with other variables. 
+<hr>
+
+#Features Selection
+<hr>
+Features selection often increases accuracy by eliminating irrelevant, redundant or highly correlated variables. In this article, we used pearson correlation to find correlation between features and recrusive feature elimination (rfe) for features selection. We also test whether features selection method improved our model or not. 
+</hr>
+
+##Filter out highly correlated features
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+names(data[,correlated])
+cor_not_data <- data[,-correlated]
+```
+Above list features are considered highly correlate with other variables
+
+##Selecting variables based on recrusive feature elimination method
+In this step we're used cross validation with k-fold = 10. This is list of variables which are important.
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+#control <- rfeControl(functions = rfFuncs, method = "cv", number = 10)
+#results <- rfe(data[,-21],data[,21], sizes = c(1:20), rfeControl = control)
+load("model/rfeResults.RDS")
+imp_cols <- predictors(results)
+rfe_data <- data[,imp_cols]
+rfe_data <- cbind(rfe_data, data$label)
+colnames(rfe_data)[12] <- "label"
+imp_cols
+
+```
+
+Lets find is it data with selected features perform better than baseline (without features selection). We're used Generalized Linear Model (GLM) model for measured the performance of the features selection methods.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+#nfolds <- 10
+#sweepstrategy <- "repeatedcv"
+#modelselection <- "oneSE"
+#evaluationmetric <- "ROC"
+#ngridstosweep <- 60
+#controlObject <- trainControl(method = sweepstrategy, number = nfolds, selectionFunction = modelselection, search = "grid", summaryFunction=twoClassSummary, classProbs = TRUE)
+
+split_index <- createDataPartition(cor_not_data$label, p = .8, list = FALSE)
+soundTrain <- cor_not_data[split_index,]
+soundTest <- cor_not_data[-split_index,]
+
+#genderCR <- train(label ~ ., data = soundTrain, family = "binomial", method = "glmnet", standardize = TRUE, trControl = controlObject, metric = "ROC")
+load("model/genderCR.RDS")
+genderCR$results[1,]
+```
+By removing correlated we got ROC `r genderCR$results[1,3]` in training data.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+predictedGenderCR <- predict(genderCR, newdata = soundTest)
+conf_1 <- confusionMatrix(data = predictedGenderCR, soundTest$label)
+conf_1
+```
+
+In the test data we got accuracy `r conf_1$overall[1]` and kappa `r conf_1$overall[2]`
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+#nfolds <- 10
+#sweepstrategy <- "repeatedcv"
+#modelselection <- "oneSE"
+#evaluationmetric <- "ROC"
+#ngridstosweep <- 60
+#controlObject <- trainControl(method = sweepstrategy, number = nfolds, selectionFunction = modelselection, search ="grid", summaryFunction=twoClassSummary, classProbs = TRUE)
+
+split_index <- createDataPartition(rfe_data$label, p = .8, list = FALSE)
+soundTrain_1 <- rfe_data[split_index,]
+soundTest_1 <- rfe_data[-split_index,]
+
+#genderRFE <- train(label~., data = soundTrain_1, family = "binomial", method = "glmnet", standardize = TRUE, trControl = controlObject, metric = "ROC")
+load("model/genderRFE.RDS")
+genderRFE$results[1,]
+```
+By using RFE we got ROC `r genderRFE$results[1,3]`
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+predictedGenderCR <- predict(genderRFE, newdata = soundTest_1)
+conf_2 <- confusionMatrix(data = predictedGenderCR, soundTest_1$label)
+conf_2
+```
+In the test data we got accuracy `r conf_2$overall[1]` and kappa `r conf_2$overall[2]` which are not so different with the features from removing correlated features.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+#nfolds <- 10
+#sweepstrategy <- "repeatedcv"
+#modelselection <- "oneSE"
+#evaluationmetric <- "ROC"
+#ngridstosweep <- 60
+#controlObject <- trainControl(method = sweepstrategy, number = nfolds, selectionFunction = modelselection, search = "grid", summaryFunction=twoClassSummary, classProbs = TRUE)
+
+split_index <- createDataPartition(data$label, p = .8, list = FALSE)
+soundTrain_2 <- data[split_index,]
+soundTest_2 <- data[-split_index,]
+#genderBased <- train(label ~ ., data = soundTrain_2, family = "binomial", method = "glmnet", standardize = TRUE, trControl = controlObject, metric = "ROC")
+load("model/genderBased.RDS")
+genderBased$results[1,]
+```
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+predictedGenderCR <- predict(genderBased, newdata = soundTest_2)
+conf_3 <- confusionMatrix(data = predictedGenderCR, soundTest_2$label)
+conf_3
+```
+
+In the baseline we got `r conf_3$overall[1]` accuracy and kappa `r conf_3$overall[2]` Since, RFE got highest accuracy then we used features that selected by RFE which is "meanfun", "IQR", "Q25",  "sd", "sfm", "Q75", "sp.ent", "modindx", "maxdom", "minfun" 
+, "median".
+
+#Model training
+##Defining Hyperparameter sets
+<hr>
+In this article, we're used generalized linear model, random forest, Xgboost and Stochastic Gradient Boostings. To define the best hyperparameter sets, Here we used OneSE (One Standard Error) as selection function and repeated cross validation with 10 k-folds are used for hyperparameter sweeping. We choose 60 point random grid sample for grid search.
+<hr>
+##Train Random Forest with parameter sweeping:
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+#nfolds <- 10
+#sweepstrategy <- "repeatedcv"
+#modelselection <- "oneSE"
+#evaluationmetric <- "ROC"
+#ngridstosweep <- 60
+
+#mtryMultiplier <- c(0.5, 0.66, 1, 1.5, 2)
+#rf_nTree <- 25
+#rf_nodeSize <- 100 
+
+#controlObject <- trainControl(method = sweepstrategy, number = nfolds, selectionFunction = modelselection, search = "grid", summaryFunction=twoClassSummary, classProbs = TRUE)
+#mtryCenter <- ceiling(sqrt(ncol(soundTrain)-1))
+#mtrySeqeunce <- unique(ceiling(mtryCenter*mtryMultiplier))
+#rfGrid <- expand.grid(.mtry = mtrySeqeunce);
+#num_rfGrid <- min(nrow(rfGrid), ngridstosweep);
+#rfGrid <- data.frame(rfGrid[sample(as.numeric(rownames(rfGrid)), num_rfGrid),]); colnames(rfGrid) <- '.mtry';
+
+#genderForest_2 <- train(label~., data = soundTrain_1, method = "rf", ntree = rf_nTree, nodesize = rf_nodeSize, importance = TRUE, tuneGrid = rfGrid, trControl = controlObject, metric = evaluationmetric)
+load("model/genderForest.RDS")
+#genderForest<- train(label~., data = soundTrain_1, method = "rpart", cp = 0.002, maxdepth=8)
+predictedGender_2 <- predict(genderForest_2, newdata = soundTest_1) 
+confusionMatrix(data = predictedGender_2, soundTest_1$label)
+```
+
+##Train Xgboost with parameter sweeping:
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+#nfolds <- 10
+#sweepstrategy <- "repeatedcv"
+#modelselection <- "oneSE"
+#evaluationmetric <- "ROC"
+#ngridstosweep <- 60
+#controlObject <- trainControl(method = sweepstrategy, number = nfolds, selectionFunction = modelselection, search = "grid", summaryFunction=twoClassSummary, classProbs = TRUE)
+
+#nrounds <- c(25, 50)
+#eta <- c(0.01, 0.025, 0.05, 0.1, 0.5, 1)
+#max_depth <- c(2,4,6)
+#gamma <- c(1, 2, 5)
+#colsample_bytree <- c(0.5, 0.75, 1)
+#min_child_weight <- c(10, 50, 100)
+#xgBoostObjective <- "binary:logistic"
+#subsample <- 1
+#xgBoostGrid = expand.grid(.nrounds = nrounds, .eta = eta, .max_depth = max_depth, .gamma = gamma, .colsample_bytree = colsample_bytree, .min_child_weight = min_child_weight, .subsample = subsample);
+#n_xgBoostgrid <- min(nrow(xgBoostGrid), ngridstosweep);
+#xgBoostGrid <- xgBoostGrid[sample(as.numeric(rownames(xgBoostGrid)), n_xgBoostgrid),]
+
+#genderXgboost_2 <- train(label~., data = soundTrain_1, method = "xgbTree", trControl = controlObject, tuneGrid = xgBoostGrid, metric = evaluationmetric)
+load("model/genderXgboost.RDS")
+predictedGender_2 <- predict(genderXgboost_2, newdata = soundTest_1) 
+confusionMatrix(data = predictedGender_2, soundTest_1$label)
+```
+
+##Train Stochastic Gradient Boostings with parameter sweeping:
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+#nfolds <- 10
+#sweepstrategy <- "repeatedcv"
+#modelselection <- "oneSE"
+#evaluationmetric <- "ROC"
+#ngridstosweep <- 60
+#controlObject <- trainControl(method = sweepstrategy, number = nfolds, selectionFunction = modelselection, search = "grid", summaryFunction=twoClassSummary, classProbs = TRUE)
+
+#interactionDepth <- c(1,3,6,9,10)
+#ntrees <- (0:5) * 50
+#shrinkage <- seq(.0005, .05,.0005)
+#nminobsinnode <- 10
+
+#gbmGrid <- expand.grid(interaction.depth = interactionDepth, n.trees = ntrees, shrinkage = shrinkage, n.minobsinnode = nminobsinnode)
+#num_gbmGrid <- min(nrow(gbmGrid), ngridstosweep)
+#gbmGrid <- data.frame(gbmGrid[sample(as.numeric(rownames(gbmGrid)), num_gbmGrid),])
+
+#genderGBM_2 <- train(label~., data = soundTrain_1, method = "gbm", trControl = controlObject, verbose = FALSE, tuneGrid = gbmGrid, metric = evaluationmetric)
+load("model/genderGBM.RDS")
+predictedGender_2 <- predict(genderGBM_2, newdata = soundTest_1)
+conf_4 <- confusionMatrix(data = predictedGender_2, soundTest_1$label)
+conf_4
+```
+#Model evaluations: Compare model performance and examine variable importance
+##Plot performance in test data vs models
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+modelCompared <- resamples(list("GLM" = genderRFE, "Random Forest" = genderForest_2, "Xgboost" = genderXgboost_2, "GBM" = genderGBM_2))
+bwplot(modelCompared, layout = c(3, 1))
+```
+```{r}
+summary(modelCompared)
+```
+## Visualize ROC curve of actual vs predicted.
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+encodingSoundTest_1 <- as.numeric(factor(soundTest_1$label, levels = c("male", "female"), labels = c(0,1)))
+
+predictedGender <- predict(genderRFE, newdata = soundTest_1, type = "prob")$female
+predictedGender_1 <- predict(genderForest_2, newdata = soundTest_1, type = "prob")$female
+predictedGender_2 <- predict(genderXgboost_2, newdata = soundTest_1, type = "prob")$female
+predictedGender_3 <- predict(genderGBM_2, newdata = soundTest_1, type = "prob")$female
+
+pred <- prediction(predictedGender, encodingSoundTest_1)
+pred_1 <- prediction(predictedGender_1, encodingSoundTest_1)
+pred_2 <- prediction(predictedGender_2, encodingSoundTest_1)
+pred_3 <- prediction(predictedGender_3, encodingSoundTest_1)
+auc <- round(performance(pred,"auc")@y.values[[1]][1], 2); perf <- performance(pred,'tpr','fpr');
+auc_1 <- round(performance(pred_1,"auc")@y.values[[1]][1], 2); perf_1 <- performance(pred_1,'tpr','fpr');
+auc_2 <- round(performance(pred_2,"auc")@y.values[[1]][1], 2); perf_2 <- performance(pred_2,'tpr','fpr');
+auc_3 <- round(performance(pred_3,"auc")@y.values[[1]][1], 2); perf_3 <- performance(pred_3,'tpr','fpr');
+
+par(mfrow = c(1, 4))
+plot(perf, col='darkgreen', main = "GLM"); legend("bottomright", inset = 0.01, legend=paste0("AUC: ", auc), cex=1, box.lty=0)
+plot(perf_1, col='darkgreen', main = "Random Forest"); legend("bottomright", inset = 0.01, legend=paste0("AUC: ", auc_1), cex=1, box.lty=0)
+plot(perf_2, col='darkgreen', main = "Xgboost"); legend("bottomright", inset = 0.01, legend=paste0("AUC: ", auc_2), cex=1, box.lty=0)
+plot(perf_3, col='darkgreen', main = "GBM"); legend("bottomright", inset = 0.01, legend=paste0("AUC: ", auc_3), cex=1, box.lty=0)
+
+```
+
+From figure above, we can see most models produced perfect score (AUC = 1) for classifying gender in the training data.
+
+##Variable importance: Plot top 10 relative variable importances for different models
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+vI_glm <- varImp(object = genderRFE, useModel = TRUE, scale = TRUE)
+p1 <- plot(vI_glm, main = "GLM", xlab='Relative Importance', ylab = 'Feature', top=10)
+vI_rf <- varImp(object = genderForest_2, useModel = TRUE, scale = TRUE)
+p2 <- plot(vI_rf, main = "Random Forest", xlab='Relative Importance', ylab = 'Feature', top=10)
+vI_xgboost <- varImp(object = genderXgboost_2, useModel = TRUE, scale = TRUE)
+p3 <- plot(vI_xgboost, main = "Xgboost", xlab='Relative Importance', ylab = 'Feature', top=10)
+vI_gbm <- varImp(object = genderGBM_2, useModel = TRUE, scale = TRUE)
+p4 <- plot(vI_gbm, main = "GBM", xlab='Relative Importance', ylab = 'Feature', top=10)
+
+grid.arrange(p2,p3,p4, ncol=3)
+
+```
+
+Meanfun and IQR are most important variables from three models. In the next step we're going to implement the models for detecting voice gender in the telephone recording.
+
+#Implementation of predicting voice gender in the telephone recording
+
+Flow of the process as follow:
+
+Audio => Speech diarization => Extract acoustic parameters => Predict Gender 
+
+##Audio format
+
+The audio format used this implementation is WAVE format with 16,000 sample rate. All audio will converted with respectively format. We used ffmpeg tool for this task.
+
+##Speaker diarisation
+
+According Wikipedia, speaker diarisation is the process of partitioning an input audio stream into homogeneous segments according to the speaker identity. The main objective is to answer the question "who spoke when?". In our case, we use speech diarization for annotating regions (in this case, time) of speaker speech in telephone conversation. We used Aalto ASR tool for speaker diarisation (https://github.com/aalto-speech/speaker-diarization).
+We used Bayesian Information Criterion (BIC) with lambda 0.75 for detecting speaker turn and Generalized Likelihood Ration (GLR) with 1000 iteration threshold for detecting speaker clustering. 
+
+The output of speech diarization for file test_1:
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+text <- readLines("temp_speech-diarization.txt",encoding="UTF-8")
+text
+```
+
+
+##Extract accoustic parameters
+
+We used tuneR and seewave package for extracting acoustic parameters. For each segments from speaker diarisation, we extracted 22 acoustic parameters respect to speakers label (either speaker_1 or speaker_2).
+
+Extracted acoustic parameter for file test_1:
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+acc <- read.csv("temp_acoustic_parameters.csv")
+head(acc[-1])
+```
+
+
+##Predict gender
+
+We used variables are selected from RFE: "meanfun", "IQR", "Q25", "sd", "sfm", "Q75", "sp.ent", "modindx", "maxdom", "minfun" , "median". GLM, RandomForest, Xgboost and Stochastic Gradient Boosting are used for predicting the gender. We count the most predicted gender occur from 4 models to be the gender of the speaker.
+
+Prediction output for test_1:
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+pred_ged <- read.csv("temp_output_final.csv")
+head(pred_ged[-1,-1])
+```
+
+#Conclusion
+
+We develop model for identifying gender based on voice. 22 acoustic features are extracted from voice. Using Recrusive Feature Elmination, we selected 11 features to included to train the model. We used Generalized Linear Model (GLM), Random Forest, Xgboost and Stochastic Gradient Boostings. To selected the best hyperparameter of the model, we used grid search. One standard error is used and repeated cross validation with 10 k-folds are used. We used random grid search for identifying the best parameter set. We choose maximum 60 point random grid sample for grid search. We evaluating all the models and find Stochastic Gradient Boostings produced the best performance with `r conf_4$overall[1] * 100` % accuracy and `r conf_4$overall[2] * 100` % kappa in the test data. We also examine variable importance and found <i>meanfun</i> and <i>IQR</i> are most importance based on our four models.
+
+We implement our model for predicting gender of the speaker in the telephone recording. We used Aalto ASR tool for speaker diarisation for segmenting speaker speech portion in the recording. Each segment we labeled the speaker then extracted the acoustic parameters. Each acoutic parameters, we predicting the gender of the speaker using 4 machine learning model. Gender of the speaker is decided by count the most gender occurs from 4 models.
+
+#Reference
+
+ * Becker, K. (2016). Identifying the Gender of a Voice using Machine Learning. Retrieved from http://www.primaryobjects.com/2016/06/22/identifying-the-gender-of-a-voice-using-machine-learning/

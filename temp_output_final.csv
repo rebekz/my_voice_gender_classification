@@ -1,0 +1,3 @@
+,subscriber,spk1_pred_male,spk1_pred_female,spk2_pred_male,spk2_pred_female,gender_spk1,gender_spk2
+1,test_1,0,1,1,0,female,male
+2,test_1,0.55,0.45,0,1,male,female
