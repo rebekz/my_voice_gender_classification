@@ -10,7 +10,7 @@ output:
     theme: journal
     keep_md: false
     toc_float: true
-runtime: knit
+runtime: shiny
 ---
 
 <hr>
@@ -83,7 +83,6 @@ summary(data)
 ```
 ##Visualize the dataset
 ```{r echo=FALSE, message=FALSE, warning=FALSE}
-
 shinyApp(
   ui = fluidPage(
     inputPanel(selectInput("numeric", label = "", choices = c("meanfreq", "sd", "median", "Q25", "Q75", "IQR", "skew", "kurt", "sp.ent", "sfm", "mode", "centroid", "meanfun", "minfun", "maxfun", "meandom", "mindom", "maxdom", "dfrange", "modindx"))),
